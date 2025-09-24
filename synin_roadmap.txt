@@ -1,0 +1,140 @@
+Synin Chatbot — Step‑by‑Step Roadmap (Django + LM Studio, local first)
+
+Feasibility: ✅ Yes. LM Studio exposes an OpenAI‑compatible HTTP API on localhost, so Django can proxy requests from a simple web UI. We’ll build locally first, then make it remote-ready.
+
+------------------------------------------------------------
+High‑Level Architecture (local-first)
+------------------------------------------------------------
+[Browser UI]  ──HTTP──>  [Django backend /api/chat]
+                         │
+                         └──HTTP──>  [LM Studio local server (OpenAI‑compatible /v1)]
+Data flow (chat):
+1) Browser sends your prompt to Django (/api/chat).
+2) Django calls LM Studio’s /v1/chat/completions (or /v1/completions) with your model.
+3) LM Studio streams tokens back; Django relays them to the browser.
+4) The UI appends tokens to the chat window (like ChatGPT).
+
+Why Django instead of calling LM Studio directly from the browser?
+- Avoid CORS headaches and keep your API key/internal ports hidden.
+- Central place to manage history, auth, rate limits, logging, and future features.
+
+------------------------------------------------------------
+What You’ll Learn Along the Way
+------------------------------------------------------------
+- How to verify and call LM Studio’s OpenAI‑style endpoints.
+- How to build a minimal Django REST endpoint (sync first, then streaming).
+- How to structure a simple, clean chat UI (HTML/CSS/JS) with dark theme.
+- How to handle conversation state (SQLite) and basic settings (model, temperature).
+- How to prepare for a remote LM Studio later (env vars, reverse proxy, auth).
+
+------------------------------------------------------------
+Milestones & Tasks
+------------------------------------------------------------
+0) Prerequisites & Folder Setup
+   [ ] Confirm Python 3.10+ and VS Code are installed.
+   [ ] Create a new project folder: synin/ (git init recommended).
+   [ ] Create a virtualenv and activate it.
+   [ ] Decide: single Django project serving both API and UI (recommended).
+
+1) Verify LM Studio Local Server
+   [ ] Open LM Studio, load a chat model, and start the “Local Server” (OpenAI‑compatible API).
+   [ ] Note the base URL (commonly http://localhost:1234/v1).
+   [ ] Test with curl or Python (httpx/requests) against /v1/models and /v1/chat/completions.
+   [ ] Confirm you can get a simple response from the model.
+   [ ] (If an API key is required, note it and keep it in an env var.)
+
+2) Bootstrap Django
+   [ ] pip install django djangorestframework httpx
+   [ ] django-admin startproject synin_backend .
+   [ ] python manage.py startapp chat
+   [ ] Add rest_framework and chat to INSTALLED_APPS.
+   [ ] Create a root URL router and a health-check endpoint (/api/health).
+
+3) First Chat Endpoint (non‑streaming)
+   [ ] Create POST /api/chat that accepts: {messages: [...], model, temperature}.
+   [ ] Server-side, call LM Studio’s /v1/chat/completions (non-streaming).
+   [ ] Return the assistant’s message as JSON.
+   [ ] Test with curl/Postman and ensure responses come back reliably.
+   [ ] Handle basic errors (LM Studio offline, bad model name, timeouts).
+
+4) Minimal Web UI (dark theme)
+   [ ] Serve a simple template at / (home page).
+   [ ] Build a chat layout: message list, input box, send button, “Enter to send”.
+   [ ] Style with a dark grey background and clean message bubbles.
+   [ ] Wire fetch() to POST /api/chat and render the reply in the chat area.
+   [ ] Add a basic “typing…” indicator while waiting.
+
+5) Streaming Responses (feel like ChatGPT)
+   [ ] Add a streaming variant: /api/chat/stream (Server‑Sent Events or fetch streaming).
+   [ ] Use LM Studio’s streaming mode; stream chunks back to the browser in real‑time.
+   [ ] In the UI, append tokens as they arrive.
+   [ ] Keep a fallback to non-streaming if needed.
+
+6) Conversation History (SQLite)
+   [ ] Create models: Conversation, Message (role, content, timestamps).
+   [ ] Store user/assistant turns per session (cookie/session ID, simple for now).
+   [ ] Add “New chat” and “Clear chat” controls in the UI.
+   [ ] Expose GET /api/conversations/<id> to restore chats on reload.
+
+7) Settings & Controls
+   [ ] Sidebar or modal to set: model name, temperature, max tokens, system prompt.
+   [ ] Persist per-session settings in DB or localStorage.
+   [ ] Add a token/character usage readout (optional).
+
+8) Hardening & Polish
+   [ ] Centralized error messages in the UI (network errors, timeouts).
+   [ ] Logging in Django (request/response timing, errors).
+   [ ] Rate limiting or simple auth (basic token) for later remote access.
+   [ ] Environment variables for LM Studio base URL and API key (if any).
+
+9) Remote‑Ready (later, when you move LM Studio)
+   [ ] Switch LM_STUDIO_BASE_URL from localhost to a remote host via env vars.
+   [ ] Add HTTPS (reverse proxy like Nginx/Caddy) and basic auth/JWT if exposed.
+   [ ] Consider a tunnel (Cloudflare Tunnel/ssh) for dev access before full deploy.
+   [ ] Dockerize Django if you prefer portable deployment.
+
+------------------------------------------------------------
+Planned Folder Structure (simple, single-repo)
+------------------------------------------------------------
+synin/
+├─ manage.py
+├─ synin_backend/
+│  ├─ __init__.py
+│  ├─ settings.py
+│  ├─ urls.py
+│  └─ asgi.py  (for streaming)
+├─ chat/
+│  ├─ __init__.py
+│  ├─ models.py   (Conversation, Message)
+│  ├─ views.py    (chat endpoints, health)
+│  ├─ urls.py
+│  └─ serializers.py
+├─ templates/
+│  └─ index.html  (chat UI)
+├─ static/
+│  └─ css/app.css (dark theme)
+├─ .env           (LM_STUDIO_BASE_URL, API key if needed)
+└─ requirements.txt
+
+------------------------------------------------------------
+Step‑by‑Step Validation Tests
+------------------------------------------------------------
+- After Step 1: curl returns a model list and a simple completion from LM Studio.
+- After Step 3: POST /api/chat returns assistant text (non-streaming) in JSON.
+- After Step 4: You can chat via the browser; responses render correctly.
+- After Step 5: You see tokens appear progressively (streaming feels real-time).
+- After Step 6: Refreshing the page keeps your last conversation.
+- After Step 7–8: Changing settings affects output; errors are shown nicely.
+- After Step 9: You can point at a remote LM Studio with env changes only.
+
+------------------------------------------------------------
+Common Pitfalls & Fixes
+------------------------------------------------------------
+- LM Studio not serving: ensure a model is loaded and “Local Server” is ON.
+- Wrong base URL: confirm it’s http://localhost:1234/v1 (or whatever LM Studio shows).
+- CORS issues: serve the UI from Django (same origin) so the browser only talks to Django.
+- Streaming hiccups: start non‑streaming first; introduce streaming after the basics work.
+- Large responses: cap max_tokens and use temperature and top_p sensibly.
+- Timeouts: increase httpx timeout slightly; show a friendly UI message.
+
+That’s it. When you’re ready, we’ll begin with Step 1 (verifying LM Studio’s local server) and I’ll walk you through each command and file you create.
