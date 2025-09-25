@@ -1,0 +1,393 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Synin</title>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+  <header class="topbar">
+  <div class="brand">Synin</div>
+  <div class="right">
+    <label class="stream-toggle">
+      <input type="checkbox" id="use-stream" checked />
+      <span>Stream</span>
+    </label>
+    <div class="status" id="status-dot" title="LM Studio status"></div>
+  </div>
+  <div class="right">
+  <button id="new-chat" class="ghost">New</button>
+  <button id="clear-chat" class="ghost">Clear</button>
+  <label class="stream-toggle"><input type="checkbox" id="use-stream" checked /><span>Stream</span></label>
+  <button id="stop-gen" class="accent" disabled>Stop</button>
+  <button id="open-settings" class="ghost">Settings</button>
+  <div class="status" id="status-dot" title="LM Studio status"></div>
+</div>
+
+
+</header>
+
+  <main class="chat-shell">
+    <div id="banner" class="banner hidden"></div>
+
+    <div id="chat" class="chat"></div>
+
+    <form id="composer" class="composer">
+      <textarea id="prompt" rows="1" placeholder="Message Synin… (Enter to send, Shift+Enter = new line)"></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+
+  <template id="bubble-user">
+    <div class="bubble user">
+      <div class="avatar">🧑‍💻</div>
+      <div class="content"></div>
+    </div>
+  </template>
+
+  <template id="bubble-assistant">
+    <div class="bubble assistant">
+      <div class="avatar">🤖</div>
+      <div class="content"></div>
+    </div>
+  </template>
+
+  <div id="settings-modal" class="modal hidden" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>Settings</h3>
+      <button id="close-settings" class="ghost small">✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span>Model</span>
+        <select id="model">
+          <option value="">(loading…)</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Temperature <em id="temp-val">0.2</em></span>
+        <input id="temperature" type="range" min="0" max="1" step="0.05" value="0.2" />
+      </label>
+
+      <label class="field">
+        <span>Max tokens (optional)</span>
+        <input id="max-tokens" type="number" min="1" placeholder="e.g., 512" />
+      </label>
+    </div>
+    <div class="modal-footer">
+      <button id="save-settings" class="accent">Save</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+    //banner 
+    const banner = document.getElementById('banner');
+function showError(msg) {
+  banner.textContent = msg;
+  banner.classList.remove('hidden');
+  setTimeout(() => banner.classList.add('hidden'), 5000);
+}
+
+async function safeFetch(url, opts = {}, timeoutMs = 60000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    let data = null;
+    try { data = await res.clone().json(); } catch { /* non-JSON or empty */ }
+    if (!res.ok) {
+      const msg = (data && (data.error || data.detail)) || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    return data ?? await res.text();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+  // --- elements ---
+  const chat = document.getElementById('chat');
+  const form = document.getElementById('composer');
+  const promptEl = document.getElementById('prompt');
+  const sendBtn = document.getElementById('send');
+  const statusDot = document.getElementById('status-dot');
+  const useStreamEl = document.getElementById('use-stream');
+  const btnNew = document.getElementById('new-chat');
+  const btnClear = document.getElementById('clear-chat');
+  const btnStop = document.getElementById('stop-gen');
+  const btnOpenSettings = document.getElementById('open-settings');
+
+  // Settings modal
+  const modal = document.getElementById('settings-modal');
+  const btnCloseSettings = document.getElementById('close-settings');
+  const btnSaveSettings = document.getElementById('save-settings');
+  const selModel = document.getElementById('model');
+  const rangeTemp = document.getElementById('temperature');
+  const tempVal = document.getElementById('temp-val');
+  const inputMax = document.getElementById('max-tokens');
+
+  // --- state ---
+  let messages = [{ role: 'system', content: 'You are Synin, a concise, helpful assistant.' }];
+  let conversationId = null;
+  let abortCtrl = null;
+
+  // --- settings state + persistence ---
+  const SETTINGS_KEY = 'synin_settings_v1';
+  function loadSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      return raw ? JSON.parse(raw) : { model: '', temperature: 0.2, max_tokens: null };
+    } catch { return { model: '', temperature: 0.2, max_tokens: null }; }
+  }
+  function saveSettings(s) {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  }
+  let settings = loadSettings();
+
+  // Apply to UI
+  function applySettingsToUI() {
+    rangeTemp.value = settings.temperature ?? 0.2;
+    tempVal.textContent = String(rangeTemp.value);
+    inputMax.value = settings.max_tokens ?? '';
+    // selModel options loaded async; selection set after load
+  }
+
+  // Load model list from backend and populate <select>
+  async function populateModels() {
+    try {
+      const res = await fetch('/api/models');
+      const data = await res.json();
+      const models = (data?.data || []).map(m => m.id).filter(Boolean);
+      selModel.innerHTML = '';
+      for (const id of models) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        selModel.appendChild(opt);
+      }
+      // select saved or default
+      if (settings.model && models.includes(settings.model)) {
+        selModel.value = settings.model;
+      } else if (models.length && !selModel.value) {
+        selModel.value = models[0];
+      }
+    } catch {
+      selModel.innerHTML = '<option value="">(failed to load)</option>';
+    }
+  }
+
+  // --- helpers ---
+  fetch('/api/health').then(r => r.ok ? statusDot.classList.add('ok') : null).catch(()=>{});
+
+  function scrollToBottom() {
+    chat.parentElement.scrollTop = chat.parentElement.scrollHeight;
+  }
+
+  function addBubble(role, text) {
+    const tplId = role === 'user' ? 'bubble-user' : 'bubble-assistant';
+    const tpl = document.getElementById(tplId);
+    const node = tpl.content.cloneNode(true);
+    node.querySelector('.content').textContent = text;
+    chat.appendChild(node);
+    scrollToBottom();
+  }
+
+  function setSending(on) {
+    sendBtn.disabled = on;
+    promptEl.disabled = on;
+    btnStop.disabled = !on;
+    sendBtn.textContent = on ? 'Sending…' : 'Send';
+  }
+
+  function currentPayload() {
+    // merge message history with settings (only include set fields)
+    const payload = { messages };
+    if (settings.model) payload.model = settings.model;
+    if (settings.temperature != null) payload.temperature = Number(settings.temperature);
+    if (settings.max_tokens) payload.max_tokens = Number(settings.max_tokens);
+    if (conversationId) payload.conversation_id = conversationId;
+    return payload;
+  }
+
+  async function callNonStreaming() {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentPayload())
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Request failed');
+    if (data.conversation_id) conversationId = data.conversation_id;
+    return data.assistant || '';
+  }
+
+  async function callStreaming(onChunk) {
+    abortCtrl = new AbortController();
+    const res = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentPayload()),
+      signal: abortCtrl.signal
+    });
+    const cid = res.headers.get('x-conversation-id');
+    if (cid) conversationId = cid;
+
+    if (!res.ok || !res.body) {
+      let msg = 'Streaming request failed';
+      try { const j = await res.json(); msg = j.error || msg; } catch {}
+      throw new Error(msg);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') return;
+          try {
+            const json = JSON.parse(payload);
+            let chunk = json?.choices?.[0]?.delta?.content;
+            if (!chunk && json?.choices?.[0]?.text) chunk = json.choices[0].text;
+            if (chunk) onChunk(chunk);
+          } catch {}
+        }
+      }
+    } finally {
+      abortCtrl = null;
+    }
+  }
+//client limit guards
+const MAX_USER_LEN = 4000;  // tweak as you like
+if (text.length > MAX_USER_LEN) {
+  showError(`Message is too long (max ${MAX_USER_LEN} chars).`);
+  return;
+}
+if (messages.length > 200) {
+  showError('This chat is very long; start a new chat to keep things snappy.');
+  return;
+}
+
+  // ---- compose/submit ----
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = promptEl.value.trim();
+    if (!text) return;
+
+    addBubble('user', text);
+    messages.push({ role: 'user', content: text });
+    promptEl.value = '';
+    promptEl.style.height = 'auto';
+    setSending(true);
+
+    try {
+      if (useStreamEl.checked) {
+        // create assistant bubble to stream into
+        const tpl = document.getElementById('bubble-assistant');
+        const node = tpl.content.cloneNode(true);
+        const contentEl = node.querySelector('.content');
+        chat.appendChild(node);
+        scrollToBottom();
+
+        await callStreaming((chunk) => {
+          contentEl.textContent += chunk;
+          scrollToBottom();
+        });
+
+        messages.push({ role: 'assistant', content: contentEl.textContent });
+      } else {
+        const reply = await callNonStreaming();
+        messages.push({ role: 'assistant', content: reply });
+        addBubble('assistant', reply);
+      }
+    } catch (err) {
+      addBubble('assistant', '⚠️ ' + err.message);
+    } finally {
+      setSending(false);
+      promptEl.focus();
+    }
+  });
+
+  // stop/abort streaming
+  btnStop.addEventListener('click', () => {
+    if (abortCtrl) {
+      abortCtrl.abort();
+    }
+  });
+
+  // textarea UX
+  promptEl.addEventListener('input', () => {
+    promptEl.style.height = 'auto';
+    promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + 'px';
+  });
+  promptEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.dispatchEvent(new Event('submit'));
+    }
+  });
+
+  // new / clear
+  btnNew.addEventListener('click', () => {
+    conversationId = null;
+    messages = [{ role: 'system', content: 'You are Synin, a concise, helpful assistant.' }];
+    chat.innerHTML = '';
+    addBubble('assistant', '🆕 New chat started.');
+  });
+  btnClear.addEventListener('click', async () => {
+    if (!conversationId) { chat.innerHTML = ''; return; }
+    try {
+      await fetch(`/api/conversations/${conversationId}/clear`, { method: 'POST' });
+      chat.innerHTML = '';
+      messages = [{ role: 'system', content: 'You are Synin, a concise, helpful assistant.' }];
+      addBubble('assistant', '🧹 Conversation cleared.');
+    } catch {
+      addBubble('assistant', '⚠️ Failed to clear conversation.');
+    }
+  });
+
+  // settings modal
+  function openModal() { modal.classList.remove('hidden'); modal.setAttribute('aria-hidden', 'false'); }
+  function closeModal() { modal.classList.add('hidden'); modal.setAttribute('aria-hidden', 'true'); }
+
+  btnOpenSettings.addEventListener('click', () => { applySettingsToUI(); openModal(); });
+  btnCloseSettings.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+  rangeTemp.addEventListener('input', () => { tempVal.textContent = String(rangeTemp.value); });
+
+  btnSaveSettings.addEventListener('click', () => {
+    settings.temperature = Number(rangeTemp.value);
+    settings.max_tokens = inputMax.value ? Number(inputMax.value) : null;
+    settings.model = selModel.value || '';
+    saveSettings(settings);
+    closeModal();
+    addBubble('assistant', '✅ Settings saved.');
+  });
+
+  // initial load
+  (async () => {
+    await populateModels();
+    applySettingsToUI();
+  })();
+</script>
+
+
+</body>
+</html>

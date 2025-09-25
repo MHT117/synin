@@ -17,26 +17,29 @@ from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_URL = 'static/'
+STATICFILES_DIRS = [BASE_DIR / 'static']
 load_dotenv(BASE_DIR / ".env")
 LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
 LM_STUDIO_API_KEY  = os.getenv("LM_STUDIO_API_KEY")  # may be None
 DEFAULT_MODEL_ID   = os.getenv("DEFAULT_MODEL_ID", "")
+
+
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'templates'],   # <-- add this
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "templates"],  
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
-
 
 
 # Quick-start development settings - unsuitable for production
@@ -54,14 +57,14 @@ ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'rest_framework',              
-    'chat'
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",   # <- must be present
+    "rest_framework",
+    "chat",
 ]
 
 MIDDLEWARE = [
@@ -75,21 +78,6 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'synin_backend.urls'
-
-TEMPLATES = [
-    {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
-        },
-    },
-]
 
 WSGI_APPLICATION = 'synin_backend.wsgi.application'
 
@@ -145,3 +133,14 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# -------- Synin hardening knobs 
+# Timeouts (seconds)
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120"))   # read/write timeout
+CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10"))    # connect/pool timeout
+
+# Limits
+MAX_TOKENS_LIMIT   = int(os.getenv("MAX_TOKENS_LIMIT", "2048"))
+MESSAGE_MAX_CHARS  = int(os.getenv("MESSAGE_MAX_CHARS", "6000"))
+HISTORY_MAX_TURNS  = int(os.getenv("HISTORY_MAX_TURNS", "300"))
+

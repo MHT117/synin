@@ -16,8 +16,10 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from chat.views import index
 
 urlpatterns = [
+    path('', index, name='home'),           # homepage (UI)
     path('admin/', admin.site.urls),
-    path('api/', include('chat.urls')),  # all API routes live in chat/urls.py
+    path('api/', include('chat.urls')),     # API routes
 ]

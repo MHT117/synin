@@ -5,4 +5,7 @@ urlpatterns = [
     path('health', views.health, name='health'),
     path('models', views.list_models, name='models'),
     path('chat', views.chat_completion, name='chat'),
+    path('chat/stream', views.chat_stream, name='chat_stream'),
+    path('conversations/<uuid:conv_id>', views.get_conversation, name='get_conversation'),
+    path('conversations/<uuid:conv_id>/clear', views.clear_conversation, name='clear_conversation'),
 ]
