@@ -5,39 +5,68 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Synin</title>
+  <!-- Main stylesheet: edit styles in static/css/app.css -->
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
 <body>
+<!--
+  index.html layout overview
+  - header.topbar: top controls (new/clear/stream/stop/settings + status)
+  - .app-shell: split layout with .sidebar (conversations) and main.chat-shell
+  - #banner: small notification area (hidden by default)
+  - #chat: chat message container (bubbles inserted by JS)
+  - #composer: message input form (textarea + send button)
+  - <template> elements: DOM templates for user & assistant bubbles
+  - #settings-modal: modal dialog for adjustable settings
+
+  To change API endpoints, search for '/api/...' inside the embedded script.
+  To change UX text (button labels, placeholders), edit the HTML below.
+-->
+
 <header class="topbar">
+  <!-- Brand / app name -->
   <div class="brand">Synin</div>
+
+  <!-- Right-aligned top controls. IDs are referenced by the inline JS. -->
   <div class="right">
     <button id="new-chat" class="ghost">New</button>
     <button id="clear-chat" class="ghost">Clear</button>
+
+    <!-- Toggle streaming on/off. Checked by default. -->
     <label class="stream-toggle">
       <input type="checkbox" id="use-stream" checked />
       <span>Stream</span>
     </label>
+
+    <!-- Stop button is enabled only while a streaming response is active. -->
     <button id="stop-gen" class="accent" disabled>Stop</button>
     <button id="open-settings" class="ghost">Settings</button>
+
+    <!-- Small status indicator. JS will add the 'ok' class when backend health is OK. -->
     <div class="status" id="status-dot" title="LM Studio status"></div>
   </div>
 </header>
 
 
 <div class="app-shell">
+  <!-- Sidebar: renders the list of conversations fetched from the server -->
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Chats</span>
-      <span class="chat-count" id="chat-count">0</span>
+      <span class="chat-count" id="chat-count">0</span> <!-- updated by JS -->
     </div>
     <div id="conversation-list" class="conversation-list"></div>
   </aside>
 
+  <!-- Main chat area -->
   <main class="chat-shell">
+    <!-- Banner: used to display transient errors or notices. Hidden by default. -->
     <div id="banner" class="banner hidden"></div>
 
+    <!-- Messages are appended here as bubble elements created from the templates below -->
     <div id="chat" class="chat"></div>
 
+    <!-- Composer: the input form. Enter sends, Shift+Enter inserts a newline. -->
     <form id="composer" class="composer">
       <textarea id="prompt" rows="1" placeholder="Message Synin… (Enter to send, Shift+Enter = new line)"></textarea>
       <button id="send" type="submit">Send</button>
@@ -45,21 +74,27 @@
   </main>
 </div>
 
-  <template id="bubble-user">
-    <div class="bubble user">
-      <div class="avatar">🧑‍💻</div>
-      <div class="content"></div>
-    </div>
-  </template>
+<!-- DOM templates for chat bubbles. Keep these minimal — content is injected into .content -->
+<template id="bubble-user">
+  <div class="bubble user">
+    <div class="avatar">🧑‍💻</div>
+    <div class="content"></div>
+  </div>
+</template>
 
-  <template id="bubble-assistant">
-    <div class="bubble assistant">
-      <div class="avatar">🤖</div>
-      <div class="content"></div>
-    </div>
-  </template>
+<template id="bubble-assistant">
+  <div class="bubble assistant">
+    <div class="avatar">🤖</div>
+    <div class="content"></div>
+  </div>
+</template>
 
-  <div id="settings-modal" class="modal hidden" aria-hidden="true">
+<!-- Settings modal
+     - Model list is populated async from /api/models
+     - Temperature and max tokens are persisted to localStorage
+     - IDs here are used by the JS below: model, temperature, max-tokens, save-settings
+-->
+<div id="settings-modal" class="modal hidden" aria-hidden="true">
   <div class="modal-card">
     <div class="modal-header">
       <h3>Settings</h3>
@@ -91,32 +126,41 @@
 
 
 <script>
-    //banner 
-    const banner = document.getElementById('banner');
-function showError(msg) {
-  banner.textContent = msg;
-  banner.classList.remove('hidden');
-  setTimeout(() => banner.classList.add('hidden'), 5000);
-}
+  // --------------------------------------------------
+  // Small inline JS for UI behavior and API integration
+  // Keep edits here minimal: comments explain where to change endpoints and defaults.
+  // --------------------------------------------------
 
-async function safeFetch(url, opts = {}, timeoutMs = 60000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { ...opts, signal: ctrl.signal });
-    let data = null;
-    try { data = await res.clone().json(); } catch { /* non-JSON or empty */ }
-    if (!res.ok) {
-      const msg = (data && (data.error || data.detail)) || `HTTP ${res.status}`;
-      throw new Error(msg);
-    }
-    return data ?? await res.text();
-  } finally {
-    clearTimeout(t);
+  // banner: used to show transient errors/notifications
+  const banner = document.getElementById('banner');
+  function showError(msg) {
+    banner.textContent = msg;
+    banner.classList.remove('hidden');
+    // hide after 5s — adjust duration here if desired
+    setTimeout(() => banner.classList.add('hidden'), 5000);
   }
-}
 
-  // --- elements ---
+  // safeFetch: small wrapper that supports timeouts and extracts JSON error messages when possible
+  async function safeFetch(url, opts = {}, timeoutMs = 60000) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...opts, signal: ctrl.signal });
+      let data = null;
+      // attempt to parse JSON for richer error info, ignore parse failures
+      try { data = await res.clone().json(); } catch { /* non-JSON or empty */ }
+      if (!res.ok) {
+        const msg = (data && (data.error || data.detail)) || `HTTP ${res.status}`;
+        throw new Error(msg);
+      }
+      // return parsed JSON when available, otherwise raw text
+      return data ?? await res.text();
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // --- elements (cached references) ---
   const chat = document.getElementById('chat');
   const form = document.getElementById('composer');
   const promptEl = document.getElementById('prompt');
@@ -130,7 +174,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   const conversationList = document.getElementById('conversation-list');
   const chatCountEl = document.getElementById('chat-count');
 
-  // Settings modal
+  // Settings modal elements
   const modal = document.getElementById('settings-modal');
   const btnCloseSettings = document.getElementById('close-settings');
   const btnSaveSettings = document.getElementById('save-settings');
@@ -140,13 +184,14 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   const inputMax = document.getElementById('max-tokens');
 
   // --- state ---
+  // SYSTEM_PROMPT: the assistant system message. Edit if you want a different assistant persona.
   const SYSTEM_PROMPT = 'You are Synin, a concise, helpful assistant.';
   let messages = [{ role: 'system', content: SYSTEM_PROMPT }];
-  let conversationId = null;
-  let conversations = [];
-  let abortCtrl = null;
+  let conversationId = null; // server-provided conversation id when available
+  let conversations = []; // cached conversations list
+  let abortCtrl = null; // used to cancel streaming requests
 
-  // --- settings state + persistence ---
+  // --- settings storage (localStorage) ---
   const SETTINGS_KEY = 'synin_settings_v1';
   function loadSettings() {
     try {
@@ -159,15 +204,16 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   }
   let settings = loadSettings();
 
-  // Apply to UI
+  // apply persisted settings to UI controls
   function applySettingsToUI() {
     rangeTemp.value = settings.temperature ?? 0.2;
     tempVal.textContent = String(rangeTemp.value);
     inputMax.value = settings.max_tokens ?? '';
-    // selModel options loaded async; selection set after load
+    // Note: selModel is populated async in populateModels()
   }
 
-  // Load model list from backend and populate <select>
+  // Load available models from backend and populate select
+  // Edit endpoint here if your backend uses a different path.
   async function populateModels() {
     try {
       const res = await fetch('/api/models');
@@ -180,7 +226,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
         opt.textContent = id;
         selModel.appendChild(opt);
       }
-      // select saved or default
+      // set saved model or default to first
       if (settings.model && models.includes(settings.model)) {
         selModel.value = settings.model;
       } else if (models.length && !selModel.value) {
@@ -191,6 +237,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   }
 
+  // Render conversation list in the sidebar from `conversations` state
   function renderConversations() {
     if (!conversationList) return;
     conversationList.innerHTML = '';
@@ -231,6 +278,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   }
 
+  // Fetch list of conversations from the backend and update UI
   async function refreshConversations() {
     if (!conversationList) return;
     try {
@@ -243,9 +291,11 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   }
 
+  // Load a single conversation by id and render its messages
   async function loadConversation(id) {
     if (!id) return;
     if (abortCtrl) {
+      // cancel any in-progress streaming request before switching
       abortCtrl.abort();
     }
     try {
@@ -280,12 +330,14 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   }
 
   // --- helpers ---
+  // quick health check: backend must respond at /api/health
   fetch('/api/health').then(r => r.ok ? statusDot.classList.add('ok') : null).catch(()=>{});
 
   function scrollToBottom() {
     chat.parentElement.scrollTop = chat.parentElement.scrollHeight;
   }
 
+  // create and append a bubble using the <template> elements above
   function addBubble(role, text) {
     const tplId = role === 'user' ? 'bubble-user' : 'bubble-assistant';
     const tpl = document.getElementById(tplId);
@@ -295,6 +347,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     scrollToBottom();
   }
 
+  // toggle UI while waiting for a response
   function setSending(on) {
     sendBtn.disabled = on;
     promptEl.disabled = on;
@@ -302,8 +355,8 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     sendBtn.textContent = on ? 'Sending…' : 'Send';
   }
 
+  // currentPayload: assemble the request payload sent to the server
   function currentPayload() {
-    // merge message history with settings (only include set fields)
     const payload = { messages };
     if (settings.model) payload.model = settings.model;
     if (settings.temperature != null) payload.temperature = Number(settings.temperature);
@@ -312,6 +365,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     return payload;
   }
 
+  // Non-streaming POST call: backend should return JSON { ok: true, assistant: '...' }
   async function callNonStreaming() {
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -324,6 +378,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     return data.assistant || '';
   }
 
+  // Streaming call: server must send SSE-like chunks separated by "\n\n" and prefixed with "data:"
   async function callStreaming(onChunk) {
     abortCtrl = new AbortController();
     const res = await fetch('/api/chat/stream', {
@@ -351,6 +406,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
+        // SSE style: messages separated by double-newline. We keep any partial chunk in buffer.
         const parts = buffer.split('\n\n');
         buffer = parts.pop();
         for (const part of parts) {
@@ -371,6 +427,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   }
 
+  // conversation selection
   if (conversationList) {
     conversationList.addEventListener('click', (event) => {
       const item = event.target.closest('.conversation-item');
@@ -386,7 +443,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     e.preventDefault();
     const text = promptEl.value.trim();
     if (!text) return;
-    const MAX_USER_LEN = 4000;
+    const MAX_USER_LEN = 4000; // safeguard to avoid huge requests
     if (text.length > MAX_USER_LEN) {
       showError(`Message is too long (max ${MAX_USER_LEN} chars).`);
       return;
@@ -438,7 +495,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   });
 
-  // textarea UX
+  // textarea UX: auto-resize and submit on Enter (unless Shift is held)
   promptEl.addEventListener('input', () => {
     promptEl.style.height = 'auto';
     promptEl.style.height = Math.min(promptEl.scrollHeight, 160) + 'px';
@@ -450,7 +507,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   });
 
-  // new / clear
+  // new / clear chat controls
   btnNew.addEventListener('click', () => {
     conversationId = null;
     messages = [{ role: 'system', content: SYSTEM_PROMPT }];
@@ -460,12 +517,14 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   });
   btnClear.addEventListener('click', async () => {
     if (!conversationId) {
+      // if not in a saved conversation, just clear local chat UI
       chat.innerHTML = '';
       messages = [{ role: 'system', content: SYSTEM_PROMPT }];
       renderConversations();
       return;
     }
     try {
+      // backend endpoint to clear conversation
       await fetch(`/api/conversations/${conversationId}/clear`, { method: 'POST' });
       chat.innerHTML = '';
       messages = [{ role: 'system', content: SYSTEM_PROMPT }];
@@ -476,7 +535,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   });
 
-  // settings modal
+  // settings modal open/close helpers
   function openModal() { modal.classList.remove('hidden'); modal.setAttribute('aria-hidden', 'false'); }
   function closeModal() { modal.classList.add('hidden'); modal.setAttribute('aria-hidden', 'true'); }
 
@@ -484,8 +543,10 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   btnCloseSettings.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
+  // live update temperature display
   rangeTemp.addEventListener('input', () => { tempVal.textContent = String(rangeTemp.value); });
 
+  // save settings to localStorage
   btnSaveSettings.addEventListener('click', () => {
     settings.temperature = Number(rangeTemp.value);
     settings.max_tokens = inputMax.value ? Number(inputMax.value) : null;
@@ -495,7 +556,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     addBubble('assistant', '✅ Settings saved.');
   });
 
-  // initial load
+  // initial load: populate models, apply saved settings, and fetch conversations
   (async () => {
     await populateModels();
     applySettingsToUI();
