@@ -1,0 +1,169 @@
+Synin Remote Access (No Server Purchase) — Roadmap
+===================================================
+
+Goal
+----
+Access your local Django+LM Studio from your phone or laptop when away from home, without renting a server.
+You also want security so a random person with the link can’t get in.
+
+Two solid paths:
+- Path A (Recommended): Tailscale (private mesh VPN). Security is your login; only your devices can reach the site.
+- Path B: ngrok (public HTTPS tunnel) but gated with Basic Auth. Link alone is not enough.
+
+We’ll also include preflight checks + troubleshooting.
+
+---------------------------------------------------
+0) Preflight (do these once)
+---------------------------------------------------
+A0. Confirm local works:
+    - Browser: http://127.0.0.1:8000/ (chat loads)
+    - API:     http://127.0.0.1:8000/api/health (should return JSON)
+
+A1. Keep LM Studio pointing at localhost in your .env:
+    LM_STUDIO_BASE_URL=http://127.0.0.1:1234/v1
+    DEFAULT_MODEL_ID=... (your model id)
+
+A2. Run Django with ASGI and bind to all interfaces (so it’s reachable via tunnels/VPN):
+    uvicorn synin_backend.asgi:application --host 0.0.0.0 --port 8000
+
+A3. Windows Firewall: allow inbound on port 8000 (Private profile is enough).
+    - The first uvicorn run may prompt you. If not, open Windows Defender Firewall →
+      Advanced settings → Inbound Rules → New Rule → Port → TCP 8000 → Allow (Private).
+
+Note: You can still use `python manage.py runserver 0.0.0.0:8000` during dev if you prefer;
+      uvicorn is better for streaming but either works.
+
+---------------------------------------------------
+1) Path A — Tailscale (private, best security for personal use)
+---------------------------------------------------
+Why: Only devices signed into your Tailscale account (your “tailnet”) can reach your PC.
+No public URL; your traffic stays peer-to-peer when possible. Great for phone/laptop at a friend’s house.
+
+A1. Install Tailscale on your Windows PC AND on your phone/laptop.
+    - Sign in with the same account.
+
+A2. On Windows, after signing in, note your device’s Tailnet IP (100.x.x.x) or MagicDNS name.
+    (From the Tailscale icon → “This device” → it shows the IP.)
+
+A3. Start your app:
+    uvicorn synin_backend.asgi:application --host 0.0.0.0 --port 8000
+
+A4. From your phone/laptop (while signed into Tailscale), open:
+    http://100.x.x.x:8000/
+    - Replace 100.x.x.x with your PC’s Tailnet IP.
+    - Streaming works over Tailscale.
+
+A5. Optional: MagicDNS & HTTPS inside tailnet
+    - If you enable MagicDNS in the Tailscale admin, you can use a name like http://pcname.tailnet:8000
+    - You can also try “tailscale serve” to expose HTTPS on the tailnet (not public internet).
+
+A6. Security notes:
+    - Only authenticated devices on your tailnet can connect. If someone gets the “link”, it won’t work.
+    - You can revoke a device in the Tailscale admin at any time.
+    - You don’t need to change your Django code or headers.
+    - Keep CSRF-exempt endpoints as-is for dev; they’re protected by tailnet membership.
+
+A7. If you want to let a friend try it briefly:
+    - Use Tailscale “Device sharing” to temporarily share your PC to their account.
+      Remove access afterwards from the admin.
+
+---------------------------------------------------
+2) Path B — ngrok (public HTTPS with Basic Auth gate)
+---------------------------------------------------
+Why: You need a quick public URL that you can open from anywhere. Basic Auth ensures the URL alone isn’t enough.
+
+B1. Install ngrok and sign in to get your auth token.
+    - In PowerShell (example): ngrok config add-authtoken <YOUR_TOKEN>
+
+B2. Start your app:
+    uvicorn synin_backend.asgi:application --host 0.0.0.0 --port 8000
+
+B3. Run a tunnel with Basic Auth (choose strong creds):
+    ngrok http 8000 --basic-auth "synin:<STRONG_PASSWORD>"
+
+    - You’ll see a https://<random-subdomain>.ngrok-free.app URL.
+    - Visit it: a browser login prompt appears. Enter synin / <STRONG_PASSWORD>.
+    - Your UI and fetch() calls to /api/* will work because the browser holds the auth for the origin.
+
+B4. Security notes:
+    - Do NOT share the password publicly. The URL alone is harmless.
+    - Keep Django’s API_BEARER disabled for this flow (otherwise your JS would need to add the header).
+    - Streaming (SSE) works fine through ngrok.
+    - Free tier is rate-limited; fine for personal use.
+
+B5. Optional: ngrok config file (~/.config/ngrok/ngrok.yml) to avoid typing flags:
+    version: 2
+    authtoken: <YOUR_TOKEN>
+    tunnels:
+      synin:
+        proto: http
+        addr: 8000
+        basic_auth: "synin:<STRONG_PASSWORD>"
+
+    Start with: ngrok start synin
+
+---------------------------------------------------
+3) (Optional) Cloudflare “Quick Tunnel” + Django Basic Auth
+---------------------------------------------------
+If you prefer Cloudflare’s tunnel and don’t want to buy/manage a domain, you can use a temporary
+trycloudflare.com URL. For security, add a very simple HTTP Basic Auth in Django so the link isn’t enough.
+(Cloudflare Access requires a domain in your account, so Quick Tunnels alone can’t do SSO.)
+
+Quick tunnel:
+    cloudflared tunnel --url http://localhost:8000
+
+Django Basic Auth (high level):
+    - Add middleware or a decorator that checks Authorization header for user:pass and returns 401
+      with “WWW-Authenticate: Basic” if missing/incorrect.
+    - Apply it to your index view and /api routes.
+    - Keep creds secret; rotate occasionally.
+
+---------------------------------------------------
+4) Testing & Troubleshooting
+---------------------------------------------------
+T0. Local still works:
+    curl http://127.0.0.1:8000/api/health
+
+T1. Firewall:
+    - If your friend can’t reach it via Tailscale, make sure your Windows Firewall rule for 8000 allows “Private”.
+    - For ngrok, firewall doesn’t matter because localhost is the target.
+
+T2. Django “ALLOWED_HOSTS”:
+    - If DEBUG=false, add your host to ALLOWED_HOSTS.
+      For ngrok, hosts change each run; use DEBUG=true for quick tests, or ALLOWED_HOSTS=["*"] only temporarily.
+
+T3. LM Studio connectivity:
+    - Your Django still calls LM Studio at 127.0.0.1:1234 (same machine). That’s fine; remote visitors never hit LM Studio directly.
+    - If /api/models fails, ensure LM Studio server is ON and a model is loaded.
+
+T4. Streaming hiccups:
+    - ngrok/Tailscale handle SSE fine. If you see blank replies, check the browser console for JS errors and the Django logs.
+
+---------------------------------------------------
+5) Quick Command Summary
+---------------------------------------------------
+# Start app (either path)
+uvicorn synin_backend.asgi:application --host 0.0.0.0 --port 8000
+
+# Path A: Tailscale
+# (install + sign in on both devices)
+# Open from phone/laptop:
+http://100.x.x.x:8000/
+
+# Path B: ngrok
+ngrok config add-authtoken <YOUR_TOKEN>
+ngrok http 8000 --basic-auth "synin:<STRONG_PASSWORD>"
+
+# Verify
+curl http://127.0.0.1:8000/api/health
+# …then hit the Tailscale URL or the ngrok https URL from your phone/laptop
+
+---------------------------------------------------
+Security Checklist
+---------------------------------------------------
+[ ] Use a strong Basic Auth password if you choose ngrok.
+[ ] Don’t post the ngrok URL or password publicly.
+[ ] Prefer Tailscale if you only need your own devices to access it; link alone won’t work for others.
+[ ] Keep DEBUG=true only for testing; set DEBUG=false if you’ll keep a tunnel up for long periods.
+[ ] If DEBUG=false, set ALLOWED_HOSTS properly (or temporarily use ALLOWED_HOSTS=["*"] while testing).
+[ ] Keep your .env out of Git; rotate the LM Studio token if you ever exposed it.

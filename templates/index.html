@@ -8,26 +8,21 @@
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
 <body>
-  <header class="topbar">
+<header class="topbar">
   <div class="brand">Synin</div>
   <div class="right">
+    <button id="new-chat" class="ghost">New</button>
+    <button id="clear-chat" class="ghost">Clear</button>
     <label class="stream-toggle">
       <input type="checkbox" id="use-stream" checked />
       <span>Stream</span>
     </label>
+    <button id="stop-gen" class="accent" disabled>Stop</button>
+    <button id="open-settings" class="ghost">Settings</button>
     <div class="status" id="status-dot" title="LM Studio status"></div>
   </div>
-  <div class="right">
-  <button id="new-chat" class="ghost">New</button>
-  <button id="clear-chat" class="ghost">Clear</button>
-  <label class="stream-toggle"><input type="checkbox" id="use-stream" checked /><span>Stream</span></label>
-  <button id="stop-gen" class="accent" disabled>Stop</button>
-  <button id="open-settings" class="ghost">Settings</button>
-  <div class="status" id="status-dot" title="LM Studio status"></div>
-</div>
-
-
 </header>
+
 
   <main class="chat-shell">
     <div id="banner" class="banner hidden"></div>
@@ -273,23 +268,21 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
       abortCtrl = null;
     }
   }
-//client limit guards
-const MAX_USER_LEN = 4000;  // tweak as you like
-if (text.length > MAX_USER_LEN) {
-  showError(`Message is too long (max ${MAX_USER_LEN} chars).`);
-  return;
-}
-if (messages.length > 200) {
-  showError('This chat is very long; start a new chat to keep things snappy.');
-  return;
-}
 
   // ---- compose/submit ----
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = promptEl.value.trim();
     if (!text) return;
-
+      const MAX_USER_LEN = 4000;
+    if (text.length > MAX_USER_LEN) {
+    showError(`Message is too long (max ${MAX_USER_LEN} chars).`);
+    return;
+    }
+    if (messages.length > 200) {
+    showError('This chat is very long; start a new chat to keep things snappy.');
+    return;
+    }
     addBubble('user', text);
     messages.push({ role: 'user', content: text });
     promptEl.value = '';
