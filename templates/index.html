@@ -24,6 +24,15 @@
 </header>
 
 
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Chats</span>
+      <span class="chat-count" id="chat-count">0</span>
+    </div>
+    <div id="conversation-list" class="conversation-list"></div>
+  </aside>
+
   <main class="chat-shell">
     <div id="banner" class="banner hidden"></div>
 
@@ -34,6 +43,7 @@
       <button id="send" type="submit">Send</button>
     </form>
   </main>
+</div>
 
   <template id="bubble-user">
     <div class="bubble user">
@@ -117,6 +127,8 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   const btnClear = document.getElementById('clear-chat');
   const btnStop = document.getElementById('stop-gen');
   const btnOpenSettings = document.getElementById('open-settings');
+  const conversationList = document.getElementById('conversation-list');
+  const chatCountEl = document.getElementById('chat-count');
 
   // Settings modal
   const modal = document.getElementById('settings-modal');
@@ -128,8 +140,10 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   const inputMax = document.getElementById('max-tokens');
 
   // --- state ---
-  let messages = [{ role: 'system', content: 'You are Synin, a concise, helpful assistant.' }];
+  const SYSTEM_PROMPT = 'You are Synin, a concise, helpful assistant.';
+  let messages = [{ role: 'system', content: SYSTEM_PROMPT }];
   let conversationId = null;
+  let conversations = [];
   let abortCtrl = null;
 
   // --- settings state + persistence ---
@@ -174,6 +188,94 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
       }
     } catch {
       selModel.innerHTML = '<option value="">(failed to load)</option>';
+    }
+  }
+
+  function renderConversations() {
+    if (!conversationList) return;
+    conversationList.innerHTML = '';
+    if (chatCountEl) {
+      chatCountEl.textContent = String(conversations.length);
+    }
+    if (!conversations.length) {
+      const empty = document.createElement('div');
+      empty.className = 'sidebar-empty';
+      empty.textContent = 'No chats yet.';
+      conversationList.appendChild(empty);
+      return;
+    }
+    for (const conv of conversations) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'conversation-item';
+      if (conv.id === conversationId) {
+        btn.classList.add('active');
+      }
+      btn.dataset.id = conv.id;
+
+      const title = document.createElement('div');
+      title.className = 'conversation-title';
+      const displayTitle = (conv.title && conv.title.trim()) ? conv.title : 'Untitled chat';
+      title.textContent = displayTitle;
+
+      const meta = document.createElement('div');
+      meta.className = 'conversation-meta';
+      const totalMessages = Number(conv.message_count || 0);
+      const visibleMessages = Math.max(0, totalMessages - 1); // subtract system prompt
+      meta.textContent = visibleMessages === 0
+        ? 'No messages yet'
+        : `${visibleMessages} message${visibleMessages === 1 ? '' : 's'}`;
+
+      btn.append(title, meta);
+      conversationList.appendChild(btn);
+    }
+  }
+
+  async function refreshConversations() {
+    if (!conversationList) return;
+    try {
+      const data = await safeFetch('/api/conversations');
+      const list = Array.isArray(data?.data) ? data.data : [];
+      conversations = list;
+      renderConversations();
+    } catch (err) {
+      console.warn('Failed to load conversations', err);
+    }
+  }
+
+  async function loadConversation(id) {
+    if (!id) return;
+    if (abortCtrl) {
+      abortCtrl.abort();
+    }
+    try {
+      const data = await safeFetch(`/api/conversations/${id}`);
+      conversationId = data?.id || id;
+      const rawMessages = Array.isArray(data?.messages) ? data.messages : [];
+      const history = [];
+      let hasSystem = false;
+      for (const msg of rawMessages) {
+        if (!msg || typeof msg.content !== 'string') continue;
+        if (msg.role === 'system') {
+          if (hasSystem) continue;
+          hasSystem = true;
+        }
+        history.push({ role: msg.role, content: msg.content });
+      }
+      if (!hasSystem) {
+        history.unshift({ role: 'system', content: SYSTEM_PROMPT });
+      }
+      messages = history;
+      chat.innerHTML = '';
+      for (const msg of messages) {
+        if (msg.role === 'user' || msg.role === 'assistant') {
+          addBubble(msg.role, msg.content);
+        }
+      }
+      renderConversations();
+      promptEl.focus();
+    } catch (err) {
+      showError(`Failed to load conversation: ${err.message}`);
     }
   }
 
@@ -269,19 +371,29 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
     }
   }
 
+  if (conversationList) {
+    conversationList.addEventListener('click', (event) => {
+      const item = event.target.closest('.conversation-item');
+      if (!item) return;
+      const id = item.dataset.id;
+      if (!id || id === conversationId) return;
+      loadConversation(id);
+    });
+  }
+
   // ---- compose/submit ----
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = promptEl.value.trim();
     if (!text) return;
-      const MAX_USER_LEN = 4000;
+    const MAX_USER_LEN = 4000;
     if (text.length > MAX_USER_LEN) {
-    showError(`Message is too long (max ${MAX_USER_LEN} chars).`);
-    return;
+      showError(`Message is too long (max ${MAX_USER_LEN} chars).`);
+      return;
     }
     if (messages.length > 200) {
-    showError('This chat is very long; start a new chat to keep things snappy.');
-    return;
+      showError('This chat is very long; start a new chat to keep things snappy.');
+      return;
     }
     addBubble('user', text);
     messages.push({ role: 'user', content: text });
@@ -304,10 +416,12 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
         });
 
         messages.push({ role: 'assistant', content: contentEl.textContent });
+        await refreshConversations();
       } else {
         const reply = await callNonStreaming();
         messages.push({ role: 'assistant', content: reply });
         addBubble('assistant', reply);
+        await refreshConversations();
       }
     } catch (err) {
       addBubble('assistant', '⚠️ ' + err.message);
@@ -339,17 +453,24 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   // new / clear
   btnNew.addEventListener('click', () => {
     conversationId = null;
-    messages = [{ role: 'system', content: 'You are Synin, a concise, helpful assistant.' }];
+    messages = [{ role: 'system', content: SYSTEM_PROMPT }];
     chat.innerHTML = '';
     addBubble('assistant', '🆕 New chat started.');
+    renderConversations();
   });
   btnClear.addEventListener('click', async () => {
-    if (!conversationId) { chat.innerHTML = ''; return; }
+    if (!conversationId) {
+      chat.innerHTML = '';
+      messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+      renderConversations();
+      return;
+    }
     try {
       await fetch(`/api/conversations/${conversationId}/clear`, { method: 'POST' });
       chat.innerHTML = '';
-      messages = [{ role: 'system', content: 'You are Synin, a concise, helpful assistant.' }];
+      messages = [{ role: 'system', content: SYSTEM_PROMPT }];
       addBubble('assistant', '🧹 Conversation cleared.');
+      await refreshConversations();
     } catch {
       addBubble('assistant', '⚠️ Failed to clear conversation.');
     }
@@ -378,6 +499,7 @@ async function safeFetch(url, opts = {}, timeoutMs = 60000) {
   (async () => {
     await populateModels();
     applySettingsToUI();
+    await refreshConversations();
   })();
 </script>
 
