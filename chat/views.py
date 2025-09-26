@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Conversation, Message
 from django.db import transaction
+from django.db.models import Count, Max
 from django.utils.text import Truncator
 import time, logging, json
 
@@ -41,6 +42,15 @@ def _get_or_create_conversation(conv_id: str | None, session_key: str | None) ->
             pass
     return Conversation.objects.create(session_key=session_key or "")
 
+def _store_incoming_messages(conv: Conversation, messages_in):
+    existing = conv.messages.filter(role__in={"system", "user"}).count()
+    for m in messages_in:
+        if m.get("role") in {"system", "user"}:
+            if existing > 0:
+                existing -= 1
+                continue
+            Message.objects.create(conversation=conv, role=m["role"], content=m["content"])
+
 def _maybe_set_title(conv: Conversation):
     # set a simple title from first user message if empty
     if not conv.title:
@@ -51,23 +61,63 @@ def _maybe_set_title(conv: Conversation):
 
 @api_view(["GET"])
 def get_conversation(request, conv_id):
+    if not request.session.session_key:
+        request.session.save()
+    session_key = request.session.session_key or ""
     try:
         conv = Conversation.objects.get(id=conv_id)
     except Conversation.DoesNotExist:
         return Response({"error": "not found"}, status=404)
+    if conv.session_key and conv.session_key != session_key:
+        return Response({"error": "not found"}, status=404)
+    if not conv.session_key and session_key:
+        conv.session_key = session_key
+        conv.save(update_fields=["session_key"])
     msgs = [{"role": m.role, "content": m.content, "created_at": m.created_at.isoformat()} for m in conv.messages.all()]
     return Response({"id": str(conv.id), "title": conv.title, "messages": msgs})
 
 @api_view(["POST"])
 def clear_conversation(request, conv_id):
+    if not request.session.session_key:
+        request.session.save()
+    session_key = request.session.session_key or ""
     try:
         conv = Conversation.objects.get(id=conv_id)
     except Conversation.DoesNotExist:
         return Response({"error": "not found"}, status=404)
+    if conv.session_key and conv.session_key != session_key:
+        return Response({"error": "not found"}, status=404)
+    if not conv.session_key and session_key:
+        conv.session_key = session_key
+        conv.save(update_fields=["session_key"])
     conv.messages.all().delete()
     conv.title = ""
     conv.save(update_fields=["title"])
     return Response({"ok": True})
+
+
+@api_view(["GET"])
+def list_conversations(request):
+    if not request.session.session_key:
+        request.session.save()
+    session_key = request.session.session_key or ""
+    qs = (Conversation.objects
+          .filter(session_key=session_key)
+          .annotate(
+              message_count=Count("messages"),
+              last_message_at=Max("messages__created_at"),
+          )
+          .order_by("-last_message_at", "-created_at"))
+    data = []
+    for conv in qs:
+        data.append({
+            "id": str(conv.id),
+            "title": conv.title or "",
+            "created_at": conv.created_at.isoformat(),
+            "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
+            "message_count": conv.message_count,
+        })
+    return Response({"data": data})
 
 
 # ---------- Web page ----------
@@ -110,6 +160,8 @@ def chat_completion(request):
     top_p         = data.get("top_p", 1.0)
     max_tokens    = data.get("max_tokens")
     conversation_id = data.get("conversation_id")
+    if not request.session.session_key:
+        request.session.save()
     session_key   = request.session.session_key or ""
 
     # Validate
@@ -131,9 +183,7 @@ def chat_completion(request):
     # Persist incoming user/system turns
     with transaction.atomic():
         conv = _get_or_create_conversation(conversation_id, session_key)
-        for m in messages_in:
-            if m.get("role") in {"system", "user"}:
-                Message.objects.create(conversation=conv, role=m["role"], content=m["content"])
+        _store_incoming_messages(conv, messages_in)
 
     headers = {"Content-Type": "application/json"}
     if settings.LM_STUDIO_API_KEY:
@@ -201,6 +251,8 @@ def chat_stream(request):
     top_p           = data.get("top_p", 1.0)
     max_tokens      = data.get("max_tokens")
     conversation_id = data.get("conversation_id")
+    if not request.session.session_key:
+        request.session.save()
     session_key     = request.session.session_key or ""
 
     # Validate
@@ -222,9 +274,7 @@ def chat_stream(request):
     # Persist incoming user/system turns first
     with transaction.atomic():
         conv = _get_or_create_conversation(conversation_id, session_key)
-        for m in messages_in:
-            if m.get("role") in {"system", "user"}:
-                Message.objects.create(conversation=conv, role=m["role"], content=m["content"])
+        _store_incoming_messages(conv, messages_in)
 
     headers = {"Content-Type": "application/json"}
     if settings.LM_STUDIO_API_KEY:
