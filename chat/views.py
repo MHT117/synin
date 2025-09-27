@@ -59,7 +59,7 @@ def _maybe_set_title(conv: Conversation):
             conv.title = (first.content[:60] + "…") if len(first.content) > 60 else first.content
             conv.save(update_fields=["title"])
 
-@api_view(["GET"])
+@api_view(["GET", "DELETE"])
 def get_conversation(request, conv_id):
     if not request.session.session_key:
         request.session.save()
@@ -73,6 +73,9 @@ def get_conversation(request, conv_id):
     if not conv.session_key and session_key:
         conv.session_key = session_key
         conv.save(update_fields=["session_key"])
+    if request.method == 'DELETE':
+        conv.delete()
+        return Response({"ok": True})
     msgs = [{"role": m.role, "content": m.content, "created_at": m.created_at.isoformat()} for m in conv.messages.all()]
     return Response({"id": str(conv.id), "title": conv.title, "messages": msgs})
 
@@ -118,6 +121,106 @@ def list_conversations(request):
             "message_count": conv.message_count,
         })
     return Response({"data": data})
+
+@api_view(["POST"])
+def optimize_prompt(request):
+    if not request.session.session_key:
+        request.session.save()
+    prompt_text = (request.data.get("prompt") or "").strip()
+    if not prompt_text:
+        return Response({"error": "prompt is required"}, status=400)
+
+    model = request.data.get("model") or settings.DEFAULT_MODEL_ID
+    if not model:
+        return Response({"error": "model is required"}, status=400)
+
+    try:
+        temperature = float(request.data.get("temperature", 0.2))
+    except (TypeError, ValueError):
+        temperature = 0.2
+    try:
+        top_p = float(request.data.get("top_p", 1.0))
+    except (TypeError, ValueError):
+        top_p = 1.0
+
+    max_tokens = request.data.get("max_tokens")
+    if max_tokens is not None:
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            return Response({"error": "max_tokens must be integer"}, status=400)
+        if max_tokens > settings.MAX_TOKENS_LIMIT:
+            max_tokens = settings.MAX_TOKENS_LIMIT
+
+    instructions = (
+        "You are an expert prompt engineer. Rewrite the provided prompt so the model response is clear, "
+        "well-scoped, and actionable. Return strict JSON with keys `optimized_prompt` (string) and `notes` "
+        "(array of short strings describing key improvements). Do not include any other text."
+    )
+
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": prompt_text},
+    ]
+
+    payload = {"model": model, "messages": messages, "temperature": temperature, "top_p": top_p}
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+
+    headers = {"Content-Type": "application/json"}
+    if settings.LM_STUDIO_API_KEY:
+        headers["Authorization"] = f"Bearer {settings.LM_STUDIO_API_KEY}"
+
+    url = f"{settings.LM_STUDIO_BASE_URL}/chat/completions"
+    timeout = httpx.Timeout(
+        connect=settings.CONNECT_TIMEOUT,
+        read=settings.REQUEST_TIMEOUT,
+        write=settings.REQUEST_TIMEOUT,
+        pool=settings.CONNECT_TIMEOUT,
+    )
+
+    try:
+        t0 = time.time()
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        lm = resp.json()
+        dt_ms = (time.time() - t0) * 1000.0
+    except httpx.HTTPError as exc:
+        log.warning("LMStudio optimize error: %s", exc)
+        return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+    content = (
+        lm.get("choices", [{}])[0].get("message", {}).get("content")
+        if isinstance(lm, dict) else ""
+    ) or ""
+
+    optimized_prompt = prompt_text
+    notes = []
+
+    if content:
+        raw = content.strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            optimized_prompt = raw or prompt_text
+        else:
+            optimized_prompt = (parsed.get("optimized_prompt") or parsed.get("optimizedPrompt") or raw).strip() or prompt_text
+            parsed_notes = parsed.get("notes") or parsed.get("tips") or []
+            if isinstance(parsed_notes, str):
+                notes = [parsed_notes.strip()] if parsed_notes.strip() else []
+            elif isinstance(parsed_notes, list):
+                notes = [str(item).strip() for item in parsed_notes if str(item).strip()]
+
+    log.info("Prompt optimize %.0fms | prompt=%s", dt_ms, Truncator(prompt_text).chars(120))
+
+    return Response({
+        "ok": True,
+        "model": model,
+        "optimized_prompt": optimized_prompt.strip(),
+        "notes": notes,
+    })
+
 
 
 # ---------- Web page ----------

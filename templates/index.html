@@ -55,7 +55,26 @@
       <span class="sidebar-title">Chats</span>
       <span class="chat-count" id="chat-count">0</span> <!-- updated by JS -->
     </div>
-    <div id="conversation-list" class="conversation-list"></div>
+    <div class="sidebar-body">
+      <div id="conversation-list" class="conversation-list"></div>
+      <section class="prompt-optimizer" aria-labelledby="optimizer-title">
+        <div class="optimizer-header">
+          <span id="optimizer-title">Prompt Optimizer</span>
+          <button type="button" id="optimizer-use-current" class="ghost small">Use Draft</button>
+        </div>
+        <textarea id="optimizer-input" class="optimizer-textarea" rows="3" placeholder="Paste a prompt to improve."></textarea>
+        <div class="optimizer-controls">
+          <button type="button" id="optimizer-run" class="accent">Optimize</button>
+          <button type="button" id="optimizer-apply" class="ghost small" disabled>Apply to Chat</button>
+        </div>
+        <div id="optimizer-output-wrap" class="optimizer-output" hidden>
+          <label class="optimizer-label" for="optimizer-output">Optimized Prompt</label>
+          <textarea id="optimizer-output" class="optimizer-textarea" rows="4" readonly></textarea>
+          <ul id="optimizer-hints" class="optimizer-hints"></ul>
+        </div>
+        <div id="optimizer-feedback" class="optimizer-feedback" aria-live="polite"></div>
+      </section>
+    </div>
   </aside>
 
   <!-- Main chat area -->
@@ -173,6 +192,14 @@
   const btnOpenSettings = document.getElementById('open-settings');
   const conversationList = document.getElementById('conversation-list');
   const chatCountEl = document.getElementById('chat-count');
+  const optimizerInput = document.getElementById('optimizer-input');
+  const optimizerOutput = document.getElementById('optimizer-output');
+  const optimizerRun = document.getElementById('optimizer-run');
+  const optimizerApply = document.getElementById('optimizer-apply');
+  const optimizerUseCurrent = document.getElementById('optimizer-use-current');
+  const optimizerOutputWrap = document.getElementById('optimizer-output-wrap');
+  const optimizerHints = document.getElementById('optimizer-hints');
+  const optimizerFeedback = document.getElementById('optimizer-feedback');
 
   // Settings modal elements
   const modal = document.getElementById('settings-modal');
@@ -203,6 +230,84 @@
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   }
   let settings = loadSettings();
+
+  // --- prompt optimizer helpers ---
+  function renderOptimizerHints(items) {
+    if (!optimizerHints) return;
+    optimizerHints.innerHTML = '';
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) {
+      optimizerHints.hidden = true;
+      return;
+    }
+    optimizerHints.hidden = false;
+    for (const hint of list) {
+      const li = document.createElement('li');
+      li.textContent = hint;
+      optimizerHints.appendChild(li);
+    }
+  }
+
+  function setOptimizerFeedback(message) {
+    if (!optimizerFeedback) return;
+    optimizerFeedback.textContent = message || '';
+  }
+
+  function setOptimizerBusy(on) {
+    if (!optimizerRun) return;
+    optimizerRun.disabled = on;
+    optimizerRun.textContent = on ? 'Optimizing...' : 'Optimize';
+  }
+
+  async function runPromptOptimizer(sourceText) {
+    if (!optimizerInput || !optimizerOutput) return;
+    const raw = typeof sourceText === 'string' ? sourceText.trim() : optimizerInput.value.trim();
+    if (!raw) {
+      optimizerOutput.value = '';
+      if (optimizerOutputWrap) optimizerOutputWrap.hidden = true;
+      renderOptimizerHints([]);
+      if (optimizerApply) optimizerApply.disabled = true;
+      setOptimizerFeedback('Add a prompt to optimize.');
+      return;
+    }
+    if (!optimizerInput.value.trim()) {
+      optimizerInput.value = raw;
+    }
+
+    const payload = { prompt: raw };
+    if (settings.model) payload.model = settings.model;
+    if (settings.temperature != null) payload.temperature = Number(settings.temperature);
+    if (settings.max_tokens) payload.max_tokens = Number(settings.max_tokens);
+
+    if (optimizerApply) optimizerApply.disabled = true;
+    setOptimizerBusy(true);
+    setOptimizerFeedback('Optimizing prompt...');
+    try {
+      const data = await safeFetch('/api/prompt/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const optimized = (data?.optimized_prompt || '').trim();
+      const notes = Array.isArray(data?.notes) ? data.notes : [];
+
+      if (optimized) {
+        optimizerOutput.value = optimized;
+      } else {
+        optimizerOutput.value = '';
+      }
+      if (optimizerOutputWrap) optimizerOutputWrap.hidden = !optimized;
+      renderOptimizerHints(notes);
+      if (optimizerApply) optimizerApply.disabled = !optimized;
+      setOptimizerFeedback(optimized ? 'Optimized prompt ready. Use "Apply to Chat" to replace your draft.' : 'Optimization returned no changes.');
+    } catch (err) {
+      if (optimizerApply) optimizerApply.disabled = !optimizerOutput.value.trim();
+      setOptimizerFeedback(`Failed to optimize: ${err.message}`);
+    } finally {
+      setOptimizerBusy(false);
+    }
+  }
 
   // apply persisted settings to UI controls
   function applySettingsToUI() {
@@ -252,6 +357,9 @@
       return;
     }
     for (const conv of conversations) {
+      const row = document.createElement('div');
+      row.className = 'conversation-row';
+
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'conversation-item';
@@ -274,7 +382,16 @@
         : `${visibleMessages} message${visibleMessages === 1 ? '' : 's'}`;
 
       btn.append(title, meta);
-      conversationList.appendChild(btn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'conversation-delete';
+      deleteBtn.dataset.id = conv.id;
+      deleteBtn.dataset.title = displayTitle;
+      deleteBtn.textContent = 'Delete';
+
+      row.append(btn, deleteBtn);
+      conversationList.appendChild(row);
     }
   }
 
@@ -329,14 +446,34 @@
     }
   }
 
+
+  async function deleteConversation(id) {
+    if (!id) return;
+    try {
+      await safeFetch(`/api/conversations/${id}`, { method: 'DELETE' });
+      if (conversationId === id) {
+        conversationId = null;
+        messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+        if (chat) {
+          chat.innerHTML = '';
+        }
+      }
+      conversations = conversations.filter((conv) => conv.id !== id);
+      renderConversations();
+      await refreshConversations();
+    } catch (err) {
+      showError(`Failed to delete chat: ${err.message}`);
+    }
+  }
+
   // --- helpers ---
   // quick health check: backend must respond at /api/health
   fetch('/api/health').then(r => r.ok ? statusDot.classList.add('ok') : null).catch(()=>{});
 
   function scrollToBottom() {
-    chat.parentElement.scrollTop = chat.parentElement.scrollHeight;
+    if (!chat) return;
+    chat.scrollTop = chat.scrollHeight;
   }
-
   // create and append a bubble using the <template> elements above
   function addBubble(role, text) {
     const tplId = role === 'user' ? 'bubble-user' : 'bubble-assistant';
@@ -429,12 +566,74 @@
 
   // conversation selection
   if (conversationList) {
-    conversationList.addEventListener('click', (event) => {
+    conversationList.addEventListener('click', async (event) => {
+      const deleteBtn = event.target.closest('.conversation-delete');
+      if (deleteBtn) {
+        event.stopPropagation();
+        const id = deleteBtn.dataset.id;
+        if (!id) return;
+        const name = deleteBtn.dataset.title ? `"${deleteBtn.dataset.title}"` : 'this chat';
+        if (!window.confirm(`Delete ${name}?`)) return;
+        await deleteConversation(id);
+        return;
+      }
       const item = event.target.closest('.conversation-item');
       if (!item) return;
       const id = item.dataset.id;
       if (!id || id === conversationId) return;
       loadConversation(id);
+    });
+  }
+
+  // prompt optimizer interactions
+  if (optimizerRun) {
+    optimizerRun.addEventListener('click', () => {
+      const typed = optimizerInput ? optimizerInput.value.trim() : '';
+      const fallback = typed || promptEl.value.trim();
+      if (!typed && fallback && optimizerInput) {
+        optimizerInput.value = fallback;
+      }
+      runPromptOptimizer(fallback);
+    });
+  }
+
+  if (optimizerApply) {
+    optimizerApply.addEventListener('click', () => {
+      if (!optimizerOutput) return;
+      const optimized = optimizerOutput.value.trim();
+      if (!optimized) {
+        setOptimizerFeedback('Optimize a prompt before applying it.');
+        return;
+      }
+      promptEl.value = optimized;
+      promptEl.dispatchEvent(new Event('input'));
+      promptEl.focus();
+      setOptimizerFeedback('Composer updated with optimized prompt.');
+    });
+  }
+
+  if (optimizerUseCurrent) {
+    optimizerUseCurrent.addEventListener('click', () => {
+      if (!optimizerInput) return;
+      const draft = promptEl.value.trim();
+      if (!draft) {
+        setOptimizerFeedback('Composer is empty. Type a prompt first.');
+        runPromptOptimizer('');
+        optimizerInput.focus();
+        return;
+      }
+      optimizerInput.value = draft;
+      runPromptOptimizer(draft);
+      optimizerInput.focus();
+    });
+  }
+
+  if (optimizerInput) {
+    optimizerInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        runPromptOptimizer();
+      }
     });
   }
 

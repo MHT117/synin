@@ -9,4 +9,5 @@ urlpatterns = [
     path('conversations', views.list_conversations, name='list_conversations'),
     path('conversations/<uuid:conv_id>', views.get_conversation, name='get_conversation'),
     path('conversations/<uuid:conv_id>/clear', views.clear_conversation, name='clear_conversation'),
+    path('prompt/optimize', views.optimize_prompt, name='optimize_prompt'),
 ]
